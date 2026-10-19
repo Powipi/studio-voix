@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Studio voix POWIPI</title>
+<style>
+/* Mise en page : la préversion à gauche, la liste des plans à droite (empilées sur téléphone). */
+:root {
+  --fond: #f3f1ec; --surface: #ffffff; --encre: #1d2230; --doux: #5d6475; --trait: #dcd8cf;
+  --accent: #f29f05; --direct: #d6323a; --ok: #2f8a4c;
+  --f-titre: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --f-texte: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-chiffres: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root { --fond: #141824; --surface: #1d2232; --encre: #eef0f5; --doux: #a3a9b8; --trait: #2f3548; --accent: #f6b23a; --direct: #ff5a61; --ok: #5cc27e; color-scheme: dark; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--fond); color: var(--encre); font: 15px/1.45 var(--f-texte); }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 16px max(16px, 3vw) 8px; }
+header h1 { margin: 0; font: 700 22px/1.2 var(--f-titre); }
+header .meta { color: var(--doux); }
+main { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 20px; padding: 8px max(16px, 3vw) 32px; align-items: start; }
+@media (max-width: 760px) { main { grid-template-columns: minmax(0, 1fr); } .colonne-video { position: static; } .cadre { max-height: 55vh; width: auto; margin-inline: auto; } }
+.colonne-video { position: sticky; top: 12px; display: grid; gap: 10px; }
+.cadre { position: relative; aspect-ratio: 9 / 16; max-height: 78vh; width: 100%; background: #000; border-radius: 10px; overflow: hidden; }
+.cadre video { width: 100%; height: 100%; display: block; object-fit: contain; }
+.antenne { position: absolute; top: 10px; left: 10px; padding: 4px 10px; border-radius: 99px; background: var(--direct); color: #fff; font: 700 12px/1.4 var(--f-texte); letter-spacing: .08em; }
+.decompte { position: absolute; inset: 0; display: grid; place-items: center; font: 800 120px/1 var(--f-titre); color: #fff; background: rgba(0,0,0,.45); }
+.choix { position: absolute; inset: 0; display: grid; place-content: center; gap: 14px; padding: 20px; text-align: center; color: #fff; font: 600 16px/1.4 var(--f-texte); background: #1d2230; cursor: pointer; }
+.choix small { font-weight: 400; color: #b9bfcc; }
+.choix input { max-width: 100%; color: #fff; }
+.niveau { height: 8px; border-radius: 99px; background: var(--trait); overflow: hidden; }
+.niveau i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .05s linear; }
+.niveau.fort i { background: var(--direct); }
+.etat { color: var(--doux); min-height: 1.4em; }
+.barre { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: 600 14px/1 var(--f-texte); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--trait); background: var(--surface); color: var(--encre); cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--doux); }
+button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+button.rec { background: var(--direct); border-color: var(--direct); color: #fff; }
+button.principal { background: var(--encre); border-color: var(--encre); color: var(--fond); }
+ol.plans { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.plan { background: var(--surface); border: 1px solid var(--trait); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; min-width: 0; }
+.plan.actif { border-color: var(--direct); box-shadow: 0 0 0 2px var(--direct) inset; }
+.plan .tete { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.plan .num { font: 700 13px/1 var(--f-chiffres); color: var(--doux); }
+.plan .nom { font: 700 16px/1.2 var(--f-titre); }
+.plan .duree { margin-left: auto; font: 13px/1 var(--f-chiffres); color: var(--doux); font-variant-numeric: tabular-nums; }
+.plan .voix { margin: 0; color: var(--doux); }
+.essais { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.essai { font: 600 13px/1 var(--f-texte); padding: 7px 10px; border-radius: 99px; border: 1px solid var(--trait); background: transparent; color: var(--encre); }
+.essai[aria-pressed="true"] { background: var(--ok); border-color: var(--ok); color: #fff; }
+.vide { color: var(--doux); font-size: 13px; }
+footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; max-width: 70ch; }
+@media (prefers-reduced-motion: reduce) { .niveau i { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Studio voix</h1>
+  <span class="meta" id="meta"></span>
+</header>
+<main>
+  <section class="colonne-video" aria-label="Préversion">
+    <div class="cadre">
+      <video id="video" playsinline muted preload="auto"></video>
+      <span class="antenne" id="antenne" hidden>ENREGISTREMENT</span>
+      <div class="decompte" id="decompte" hidden></div>
+      <label class="choix" id="choix" hidden>
+        <span>Choisis la préversion du Reel<br><small>(le fichier preversion.mp4 envoyé par Claude)</small></span>
+        <input type="file" id="fichier" accept="video/mp4,video/*">
+      </label>
+    </div>
+    <div class="niveau" id="niveau" title="Niveau du micro"><i></i></div>
+    <div class="etat" id="etat" role="status">Autorise le micro pour commencer.</div>
+    <div class="barre">
+      <button id="btn-micro" class="principal">Autoriser le micro</button>
+      <button id="btn-stop" disabled>Arrêter (Échap)</button>
+      <button id="btn-export" disabled>Exporter la voix</button>
+    </div>
+  </section>
+  <section aria-label="Plans">
+    <ol class="plans" id="plans"></ol>
+  </section>
+</main>
+<footer>
+  Un plan à la fois : la préversion démarre au début du plan après un décompte, ton micro enregistre, et tout s'arrête seul à la fin du plan.
+  3 essais au maximum par plan ; tu choisis celui qu'on garde. « Exporter la voix » crée un fichier <code>voix-AAAA-MM-JJ-slug.zip</code> à envoyer à Claude dans le chat :
+  il contient <code>voix.wav</code> (tous les plans gardés, calés sur la préversion sans le décompte) et un fichier par plan.
+  Les essais restent dans ce navigateur si tu fermes la page.
+</footer>
+
+<script id="donnees" type="application/json">__DONNEES__</script>
+<script>
+"use strict";
+// Données du Reel : intégrées à la page (fichier local), sinon dans le lien (#p=..., version en ligne).
+function lireDonnees() {
+  try { return JSON.parse(document.getElementById("donnees").textContent); } catch (e) {}
+  try {
+    const m = location.hash.match(/[#&]p=([A-Za-z0-9_-]+)/);
+    if (m) {
+      const b = atob(m[1].replace(/-/g, "+").replace(/_/g, "/"));
+      return JSON.parse(new TextDecoder().decode(Uint8Array.from(b, (c) => c.charCodeAt(0))));
+    }
+  } catch (e) {}
+  return null;
+}
+const D = lireDonnees();
+if (!D) {
+  document.querySelector("main").innerHTML = '<p class="etat">Ce studio s\'ouvre avec le lien envoyé par Claude pour chaque Reel (il contient les plans).</p>';
+  throw new Error("pas de données");
+}
+const MAX_ESSAIS = 3, QUEUE_S = 0.4, DECOMPTE_S = 2;
+const $ = (id) => document.getElementById(id);
+const video = $("video");
+if (D.video) video.src = D.video;
+else {
+  const choix = $("choix"); choix.hidden = false;
+  $("fichier").onchange = (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    video.src = URL.createObjectURL(f); choix.hidden = true;
+  };
+}
+const fr = (x) => x.toFixed(1).replace(".", ",");
+$("meta").textContent = `${D.reel} · ${D.plans.length} plans · ${fr(D.plans.reduce((s, p) => s + p.duree, 0))} s`;
+
+// État : essais[i] = [{pcm: Float32Array, rate}], garde[i] = index de l'essai gardé
+const essais = D.plans.map(() => []), garde = D.plans.map(() => -1);
+let ctx = null, flux = null, capture = null, enCours = null, ecoute = null;
+
+// ---------- Persistance locale (IndexedDB) ----------
+const BASE = "studio-voix-" + D.reel;
+function ouvrirBase() {
+  return new Promise((ok) => {
+    try {
+      const r = indexedDB.open(BASE, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("plans");
+      r.onsuccess = () => ok(r.result); r.onerror = () => ok(null);
+    } catch (e) { ok(null); }
+  });
+}
+let base = null;
+async function sauver(i) {
+  if (!base) return;
+  try {
+    const tx = base.transaction("plans", "readwrite");
+    tx.objectStore("plans").put({ essais: essais[i].map((e) => ({ rate: e.rate, pcm: e.pcm.buffer })), garde: garde[i] }, i);
+  } catch (e) {}
+}
+async function charger() {
+  base = await ouvrirBase();
+  if (!base) return;
+  await Promise.all(D.plans.map((_, i) => new Promise((ok) => {
+    try {
+      const r = base.transaction("plans").objectStore("plans").get(i);
+      r.onsuccess = () => { const v = r.result; if (v) { essais[i] = v.essais.map((e) => ({ rate: e.rate, pcm: new Float32Array(e.pcm) })); garde[i] = v.garde; } ok(); };
+      r.onerror = () => ok();
+    } catch (e) { ok(); }
+  })));
+}
+
+// ---------- Affichage des plans ----------
+function rendre() {
+  const ol = $("plans"); ol.textContent = "";
+  D.plans.forEach((p, i) => {
+    const li = document.createElement("li");
+    li.className = "plan" + (enCours && enCours.i === i ? " actif" : "");
+    const tete = document.createElement("div"); tete.className = "tete";
+    tete.innerHTML = `<span class="num">${String(i + 1).padStart(2, "0")}</span><span class="nom"></span><span class="duree">${fr(p.duree)} s</span>`;
+    tete.querySelector(".nom").textContent = p.nom;
+    const voix = document.createElement("p"); voix.className = "voix"; voix.textContent = p.voix;
+    const ligne = document.createElement("div"); ligne.className = "essais";
+    const n = essais[i].length;
+    const rec = document.createElement("button");
+    rec.className = "rec"; rec.id = "rec-" + i;
+    rec.textContent = n === 0 ? "● Enregistrer" : n < MAX_ESSAIS ? `● Essai ${n + 1}` : "3 essais faits";
+    rec.disabled = !flux || !!enCours || n >= MAX_ESSAIS;
+    rec.onclick = () => enregistrer(i);
+    ligne.append(rec);
+    if (n === 0) {
+      const v = document.createElement("span"); v.className = "vide"; v.textContent = "Pas encore enregistré"; ligne.append(v);
+    }
+    essais[i].forEach((e, k) => {
+      const b = document.createElement("button");
+      b.className = "essai"; b.id = `essai-${i}-${k}`;
+      b.setAttribute("aria-pressed", garde[i] === k ? "true" : "false");
+      b.textContent = `${garde[i] === k ? "✓ " : ""}Essai ${k + 1} · ${fr(e.pcm.length / e.rate)} s`;
+      b.title = "Garder cet essai";
+      b.disabled = !!enCours;
+      b.onclick = () => { garde[i] = k; sauver(i); rendre(); };
+      ligne.append(b);
+    });
+    if (n > 0) {
+      const ec = document.createElement("button"); ec.id = "ecoute-" + i;
+      ec.textContent = "▶ Écouter avec l'image"; ec.disabled = !!enCours;
+      ec.onclick = () => ecouter(i);
+      ligne.append(ec);
+    }
+    li.append(tete, voix, ligne);
+    ol.append(li);
+  });
+  $("btn-export").disabled = !!enCours || !garde.some((g) => g >= 0);
+  $("btn-stop").disabled = !enCours && !ecoute;
+}
+
+// ---------- Micro ----------
+$("btn-micro").onclick = async () => {
+  try {
+    flux = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+  } catch (e) {
+    $("etat").textContent = "Micro refusé ou introuvable. Autorise-le dans le navigateur, puis recharge la page.";
+    return;
+  }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaStreamSource(flux);
+  capture = ctx.createScriptProcessor(4096, 1, 1);
+  const tampons = [];
+  capture.onaudioprocess = (ev) => {
+    const d = ev.inputBuffer.getChannelData(0);
+    let crete = 0; for (let k = 0; k < d.length; k++) crete = Math.max(crete, Math.abs(d[k]));
+    const niv = $("niveau"); niv.firstElementChild.style.width = Math.min(100, crete * 140) + "%";
+    niv.classList.toggle("fort", crete > 0.95);
+    if (enCours && enCours.actif) enCours.tampons.push(new Float32Array(d));
+  };
+  src.connect(capture); capture.connect(ctx.destination);
+  $("btn-micro").hidden = true;
+  $("etat").textContent = "Micro prêt. Choisis un plan et clique sur « Enregistrer ».";
+  rendre();
+};
+
+// ---------- Enregistrement d'un plan ----------
+function attendre(ms) { return new Promise((ok) => setTimeout(ok, ms)); }
+async function enregistrer(i) {
+  if (!flux || enCours) return;
+  if (ctx.state === "suspended") await ctx.resume();
+  const p = D.plans[i];
+  enCours = { i, actif: false, tampons: [], annule: false };
+  rendre();
+  video.pause(); video.currentTime = p.debut;
+  const dc = $("decompte"); dc.hidden = false;
+  for (let k = DECOMPTE_S; k > 0; k--) { dc.textContent = k; await attendre(1000); if (enCours.annule) break; }
+  dc.hidden = true;
+  if (enCours.annule) { enCours = null; $("etat").textContent = "Enregistrement annulé."; rendre(); return; }
+  $("antenne").hidden = false;
+  $("etat").textContent = `Plan ${i + 1} : ${p.nom}. Lis à ton rythme, ça s'arrête seul.`;
+  enCours.actif = true;
+  video.play().catch(() => { $("etat").textContent = "La vidéo ne se lit pas dans ce navigateur : l'enregistrement continue, suis le texte du plan."; });
+  // L'horloge fait foi (la vidéo peut démarrer avec un léger retard) : arrêt à durée du plan + queue.
+  const t0 = performance.now(), duree = (p.duree + QUEUE_S) * 1000;
+  await new Promise((ok) => {
+    const tic = () => {
+      if (!enCours || enCours.annule || performance.now() - t0 >= duree) return ok();
+      requestAnimationFrame(tic);
+    };
+    tic();
+  });
+  video.pause();
+  $("antenne").hidden = true;
+  const { tampons, annule } = enCours;
+  enCours = null;
+  if (annule && tampons.length === 0) { $("etat").textContent = "Enregistrement annulé."; rendre(); return; }
+  const total = tampons.reduce((s, t) => s + t.length, 0);
+  const pcm = new Float32Array(total); let o = 0;
+  for (const t of tampons) { pcm.set(t, o); o += t.length; }
+  essais[i].push({ pcm, rate: ctx.sampleRate });
+  garde[i] = essais[i].length - 1;
+  await sauver(i);
+  $("etat").textContent = `Essai ${essais[i].length} du plan ${i + 1} enregistré. Écoute-le, ou passe au plan suivant.`;
+  rendre();
+}
+
+// ---------- Écoute ----------
+async function ecouter(i) {
+  arreterEcoute();
+  const k = garde[i] >= 0 ? garde[i] : essais[i].length - 1;
+  const e = essais[i][k]; if (!e) return;
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state === "suspended") await ctx.resume();
+  const buf = ctx.createBuffer(1, e.pcm.length, e.rate); buf.copyToChannel(e.pcm, 0);
+  const s = ctx.createBufferSource(); s.buffer = buf; s.connect(ctx.destination);
+  video.currentTime = D.plans[i].debut;
+  await video.play().catch(() => {});
+  s.start();
+  ecoute = s;
+  s.onended = () => { if (ecoute === s) { ecoute = null; video.pause(); rendre(); } };
+  $("etat").textContent = `Écoute du plan ${i + 1}, essai ${k + 1}.`;
+  rendre();
+}
+function arreterEcoute() { if (ecoute) { try { ecoute.stop(); } catch (e) {} ecoute = null; video.pause(); } }
+
+$("btn-stop").onclick = () => { if (enCours) enCours.annule = true; arreterEcoute(); rendre(); };
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") $("btn-stop").click(); });
+
+// ---------- Export : WAV + ZIP ----------
+function wav(pcm, rate) {
+  const n = pcm.length, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+  const ec = (o, s) => { for (let k = 0; k < s.length; k++) v.setUint8(o + k, s.charCodeAt(k)); };
+  ec(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); ec(8, "WAVE"); ec(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ec(36, "data"); v.setUint32(40, n * 2, true);
+  for (let k = 0; k < n; k++) { const x = Math.max(-1, Math.min(1, pcm[k])); v.setInt16(44 + k * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return new Uint8Array(b);
+}
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u) { let c = 0xffffffff; for (let k = 0; k < u.length; k++) c = CRC[(c ^ u[k]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function zip(fichiers) {
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  for (const f of fichiers) {
+    const nom = enc.encode(f.nom), c = crc32(f.data), n = f.data.length;
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(8, 0, true);
+    h.setUint32(14, c, true); h.setUint32(18, n, true); h.setUint32(22, n, true); h.setUint16(26, nom.length, true);
+    parts.push(new Uint8Array(h.buffer), nom, f.data);
+    const ce = new DataView(new ArrayBuffer(46));
+    ce.setUint32(0, 0x02014b50, true); ce.setUint16(4, 20, true); ce.setUint16(6, 20, true);
+    ce.setUint32(16, c, true); ce.setUint32(20, n, true); ce.setUint32(24, n, true); ce.setUint16(28, nom.length, true); ce.setUint32(42, off, true);
+    central.push(new Uint8Array(ce.buffer), nom);
+    off += 30 + nom.length + n;
+  }
+  const taille = central.reduce((s, u) => s + u.length, 0);
+  const fin = new DataView(new ArrayBuffer(22));
+  fin.setUint32(0, 0x06054b50, true); fin.setUint16(8, fichiers.length, true); fin.setUint16(10, fichiers.length, true);
+  fin.setUint32(12, taille, true); fin.setUint32(16, off, true);
+  return new Blob([...parts, ...central, new Uint8Array(fin.buffer)], { type: "application/zip" });
+}
+$("btn-export").onclick = () => {
+  const rate = (essais.flat()[0] || {}).rate || 48000;
+  const origine = D.plans[0].debut;
+  const finTotale = D.plans[D.plans.length - 1].debut + D.plans[D.plans.length - 1].duree + QUEUE_S - origine;
+  const piste = new Float32Array(Math.ceil(finTotale * rate));
+  const fichiers = [], calage = [];
+  D.plans.forEach((p, i) => {
+    const e = essais[i][garde[i]];
+    if (!e) { calage.push({ plan: i + 1, nom: p.nom, enregistre: false }); return; }
+    const debut = Math.round((p.debut - origine) * rate);
+    piste.set(e.pcm.subarray(0, Math.max(0, Math.min(e.pcm.length, piste.length - debut))), debut);
+    const nomFichier = `plans/plan-${String(i + 1).padStart(2, "0")}.wav`;
+    fichiers.push({ nom: nomFichier, data: wav(e.pcm, e.rate) });
+    calage.push({ plan: i + 1, nom: p.nom, enregistre: true, fichier: nomFichier, essai_garde: garde[i] + 1, essais: essais[i].length,
+      debut_dans_voix_s: +(p.debut - origine).toFixed(3), debut_dans_preversion_s: p.debut, duree_plan_s: p.duree, duree_prise_s: +(e.pcm.length / e.rate).toFixed(3) });
+  });
+  fichiers.unshift({ nom: "voix.wav", data: wav(piste, rate) });
+  fichiers.push({ nom: "calage.json", data: new TextEncoder().encode(JSON.stringify({ reel: D.reel, echantillonnage: rate, queue_s: QUEUE_S, plans: calage }, null, 2)) });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(zip(fichiers));
+  a.download = `voix-${D.reel}.zip`;
+  document.body.append(a); a.click(); a.remove();
+  const manquants = calage.filter((c) => !c.enregistre).map((c) => c.plan);
+  $("etat").textContent = manquants.length ? `Exporté, mais il manque les plans ${manquants.join(", ")}.` : "Exporté : envoie le fichier .zip à Claude dans le chat.";
+};
+
+charger().then(rendre);
+</script>
+</body>
+</html>
