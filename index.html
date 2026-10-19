@@ -104,7 +104,7 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
 </main>
 <footer>
   Un plan à la fois : la préversion démarre au début du plan après un décompte, ton micro enregistre, et tout s'arrête seul à la fin du plan.
-  3 essais au maximum par plan ; tu choisis celui qu'on garde. « Exporter la voix » crée un fichier <code>voix-AAAA-MM-JJ-slug.zip</code> à envoyer à Claude dans le chat :
+  Autant d'essais que tu veux par plan ; tu choisis celui qu'on garde. Le compteur en haut indique tes essais et le temps passé dans le studio pour ce Reel. « Exporter la voix » crée un fichier <code>voix-AAAA-MM-JJ-slug.zip</code> à envoyer à Claude dans le chat :
   il contient <code>voix.wav</code> (tous les plans gardés, calés sur la préversion sans le décompte) et un fichier par plan.
   Les essais restent dans ce navigateur si tu fermes la page.
 </footer>
@@ -165,7 +165,7 @@ const D0 = lireDonnees();
 if (D0) demarrer(D0, null); else accueil();
 
 function demarrer(D, videoUrl) {
-const MAX_ESSAIS = 3, QUEUE_S = 0.4, DECOMPTE_S = 2;
+const QUEUE_S = 0.4, DECOMPTE_S = 2;
 const video = $("video");
 if (D.video) video.src = D.video;
 else if (videoUrl) video.src = videoUrl;
@@ -177,7 +177,17 @@ else {
   };
 }
 const fr = (x) => x.toFixed(1).replace(".", ",");
-$("meta").textContent = `${D.reel} · ${D.plans.length} plans · ${fr(D.plans.reduce((s, p) => s + p.duree, 0))} s`;
+const titre = `${D.reel} · ${D.plans.length} plans · ${fr(D.plans.reduce((s, p) => s + p.duree, 0))} s`;
+// Compteur (garde-fou non bloquant) : essais, minutes enregistrées, temps passé (pauses de plus de 30 min non comptées).
+function bilan() {
+  const tous = essais.flat();
+  const t = tous.map((e) => e.t).filter(Boolean).sort((a, b) => a - b);
+  let studio = 0;
+  for (let k = 1; k < t.length; k++) { const ecart = t[k] - t[k - 1]; if (ecart <= 30 * 60000) studio += ecart; }
+  if (t.length) studio += 60000; // une minute pour le premier essai
+  return { essais: tous.length, enregistre_min: +(tous.reduce((s, e) => s + e.pcm.length / e.rate, 0) / 60).toFixed(1), studio_min: Math.round(studio / 60000) };
+}
+function majMeta() { const b = bilan(); $("meta").textContent = `${titre} · ${b.essais} essai${b.essais > 1 ? "s" : ""} · ${b.studio_min} min dans le studio`; }
 
 // État : essais[i] = [{pcm: Float32Array, rate}], garde[i] = index de l'essai gardé
 const essais = D.plans.map(() => []), garde = D.plans.map(() => -1);
@@ -199,7 +209,7 @@ async function sauver(i) {
   if (!base) return;
   try {
     const tx = base.transaction("plans", "readwrite");
-    tx.objectStore("plans").put({ essais: essais[i].map((e) => ({ rate: e.rate, pcm: e.pcm.buffer })), garde: garde[i] }, i);
+    tx.objectStore("plans").put({ essais: essais[i].map((e) => ({ rate: e.rate, pcm: e.pcm.buffer, t: e.t })), garde: garde[i] }, i);
   } catch (e) {}
 }
 async function charger() {
@@ -208,7 +218,7 @@ async function charger() {
   await Promise.all(D.plans.map((_, i) => new Promise((ok) => {
     try {
       const r = base.transaction("plans").objectStore("plans").get(i);
-      r.onsuccess = () => { const v = r.result; if (v) { essais[i] = v.essais.map((e) => ({ rate: e.rate, pcm: new Float32Array(e.pcm) })); garde[i] = v.garde; } ok(); };
+      r.onsuccess = () => { const v = r.result; if (v) { essais[i] = v.essais.map((e) => ({ rate: e.rate, pcm: new Float32Array(e.pcm), t: e.t })); garde[i] = v.garde; } ok(); };
       r.onerror = () => ok();
     } catch (e) { ok(); }
   })));
@@ -216,6 +226,7 @@ async function charger() {
 
 // ---------- Affichage des plans ----------
 function rendre() {
+  majMeta();
   const ol = $("plans"); ol.textContent = "";
   D.plans.forEach((p, i) => {
     const li = document.createElement("li");
@@ -228,8 +239,8 @@ function rendre() {
     const n = essais[i].length;
     const rec = document.createElement("button");
     rec.className = "rec"; rec.id = "rec-" + i;
-    rec.textContent = n === 0 ? "● Enregistrer" : n < MAX_ESSAIS ? `● Essai ${n + 1}` : "3 essais faits";
-    rec.disabled = !flux || !!enCours || n >= MAX_ESSAIS;
+    rec.textContent = n === 0 ? "● Enregistrer" : `● Essai ${n + 1}`;
+    rec.disabled = !flux || !!enCours;
     rec.onclick = () => enregistrer(i);
     ligne.append(rec);
     if (n === 0) {
@@ -317,7 +328,7 @@ async function enregistrer(i) {
   const total = tampons.reduce((s, t) => s + t.length, 0);
   const pcm = new Float32Array(total); let o = 0;
   for (const t of tampons) { pcm.set(t, o); o += t.length; }
-  essais[i].push({ pcm, rate: ctx.sampleRate });
+  essais[i].push({ pcm, rate: ctx.sampleRate, t: Date.now() });
   garde[i] = essais[i].length - 1;
   await sauver(i);
   $("etat").textContent = `Essai ${essais[i].length} du plan ${i + 1} enregistré. Écoute-le, ou passe au plan suivant.`;
@@ -396,7 +407,7 @@ $("btn-export").onclick = () => {
       debut_dans_voix_s: +(p.debut - origine).toFixed(3), debut_dans_preversion_s: p.debut, duree_plan_s: p.duree, duree_prise_s: +(e.pcm.length / e.rate).toFixed(3) });
   });
   fichiers.unshift({ nom: "voix.wav", data: wav(piste, rate) });
-  fichiers.push({ nom: "calage.json", data: new TextEncoder().encode(JSON.stringify({ reel: D.reel, echantillonnage: rate, queue_s: QUEUE_S, plans: calage }, null, 2)) });
+  fichiers.push({ nom: "calage.json", data: new TextEncoder().encode(JSON.stringify({ reel: D.reel, echantillonnage: rate, queue_s: QUEUE_S, compteur: bilan(), plans: calage }, null, 2)) });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(zip(fichiers));
   a.download = `voix-${D.reel}.zip`;
