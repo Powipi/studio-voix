@@ -31,6 +31,12 @@ main { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); ga
 .choix { position: absolute; inset: 0; display: grid; place-content: center; gap: 14px; padding: 20px; text-align: center; color: #fff; font: 600 16px/1.4 var(--f-texte); background: #1d2230; cursor: pointer; }
 .choix small { font-weight: 400; color: #b9bfcc; }
 .choix input { max-width: 100%; color: #fff; }
+.accueil { padding: 8px max(16px, 3vw) 32px; display: grid; gap: 12px; max-width: 720px; }
+.depot { display: grid; gap: 10px; padding: 28px 22px; border: 2px dashed var(--trait); border-radius: 12px; background: var(--surface); cursor: pointer; }
+.depot.survol { border-color: var(--accent); }
+.depot strong { font: 700 18px/1.3 var(--f-titre); }
+.depot span { color: var(--doux); }
+.charges { margin: 0; padding-left: 20px; }
 .niveau { height: 8px; border-radius: 99px; background: var(--trait); overflow: hidden; }
 .niveau i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .05s linear; }
 .niveau.fort i { background: var(--direct); }
@@ -63,7 +69,17 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
   <h1>Studio voix</h1>
   <span class="meta" id="meta"></span>
 </header>
-<main>
+<section class="accueil" id="accueil" hidden>
+  <label class="depot" id="depot">
+    <strong>Charge le Reel à enregistrer</strong>
+    <span>Sélectionne les deux fichiers envoyés par Claude, ensemble ou l'un après l'autre :<br>
+    la fiche des plans <code>studio-voix.md</code> et la préversion <code>preversion.mp4</code>.<br>Tu peux aussi les glisser ici.</span>
+    <input type="file" id="fichiers" multiple accept=".md,.json,text/markdown,video/mp4,video/*">
+  </label>
+  <ul class="charges" id="charges"></ul>
+  <p class="etat" id="etat-accueil" role="status"></p>
+</section>
+<main id="studio">
   <section class="colonne-video" aria-label="Préversion">
     <div class="cadre">
       <video id="video" playsinline muted preload="auto"></video>
@@ -108,15 +124,51 @@ function lireDonnees() {
   } catch (e) {}
   return null;
 }
-const D = lireDonnees();
-if (!D) {
-  document.querySelector("main").innerHTML = '<p class="etat">Ce studio s\'ouvre avec le lien envoyé par Claude pour chaque Reel (il contient les plans).</p>';
-  throw new Error("pas de données");
+// Fiche des plans (.md) : on lit le bloc ```json qu'elle contient (ou un .json brut).
+function lireFiche(texte) {
+  const m = texte.match(/```json\s*([\s\S]*?)```/);
+  const d = JSON.parse(m ? m[1] : texte);
+  if (!d || !Array.isArray(d.plans) || !d.plans.length || !d.plans.every((p) => typeof p.debut === "number" && typeof p.duree === "number")) throw new Error("fiche");
+  return d;
 }
-const MAX_ESSAIS = 3, QUEUE_S = 0.4, DECOMPTE_S = 2;
+// Accueil : sans données dans la page ni dans le lien, on charge la fiche et la vidéo.
+function accueil() {
+  $("studio").hidden = true; document.querySelector("footer").hidden = true; $("accueil").hidden = false;
+  let fiche = null, videoUrl = null, nomVideo = "";
+  const maj = () => {
+    const ul = $("charges"); ul.textContent = "";
+    for (const t of [fiche ? `Fiche : ${fiche.reel} (${fiche.plans.length} plans)` : "Fiche des plans : à charger", videoUrl ? `Préversion : ${nomVideo}` : "Préversion : à charger"]) {
+      const li = document.createElement("li"); li.textContent = t; ul.append(li);
+    }
+    if (fiche && videoUrl) { $("accueil").hidden = true; $("studio").hidden = false; document.querySelector("footer").hidden = false; demarrer(fiche, videoUrl); }
+  };
+  const prendre = async (liste) => {
+    for (const f of liste) {
+      if (/\.(md|json|txt)$/i.test(f.name) || /markdown|json|text/.test(f.type)) {
+        try { fiche = lireFiche(await f.text()); $("etat-accueil").textContent = ""; }
+        catch (e) { $("etat-accueil").textContent = `« ${f.name} » n'est pas une fiche de plans du studio. Prends le fichier studio-voix.md envoyé par Claude.`; }
+      } else if (f.type.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(f.name)) {
+        videoUrl = URL.createObjectURL(f); nomVideo = f.name;
+      }
+    }
+    maj();
+  };
+  $("fichiers").onchange = (ev) => prendre([...ev.target.files]);
+  const depot = $("depot");
+  depot.addEventListener("dragover", (ev) => { ev.preventDefault(); depot.classList.add("survol"); });
+  depot.addEventListener("dragleave", () => depot.classList.remove("survol"));
+  depot.addEventListener("drop", (ev) => { ev.preventDefault(); depot.classList.remove("survol"); prendre([...ev.dataTransfer.files]); });
+  maj();
+}
 const $ = (id) => document.getElementById(id);
+const D0 = lireDonnees();
+if (D0) demarrer(D0, null); else accueil();
+
+function demarrer(D, videoUrl) {
+const MAX_ESSAIS = 3, QUEUE_S = 0.4, DECOMPTE_S = 2;
 const video = $("video");
 if (D.video) video.src = D.video;
+else if (videoUrl) video.src = videoUrl;
 else {
   const choix = $("choix"); choix.hidden = false;
   $("fichier").onchange = (ev) => {
@@ -354,6 +406,7 @@ $("btn-export").onclick = () => {
 };
 
 charger().then(rendre);
+}
 </script>
 </body>
 </html>
