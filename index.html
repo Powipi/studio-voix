@@ -453,7 +453,9 @@ $("btn-export").onclick = () => {
     const e = essais[i][garde[i]];
     if (!e) { calage.push({ plan: i + 1, nom: p.nom, enregistre: false }); return; }
     const debut = Math.round((p.debut - origine) * rate);
-    piste.set(e.pcm.subarray(0, Math.max(0, Math.min(e.pcm.length, piste.length - debut))), debut);
+    // On additionne au lieu d'écraser : la queue de 0,4 s d'un plan chevauche le début du suivant, et sa fin de mot doit rester.
+    const n = Math.max(0, Math.min(e.pcm.length, piste.length - debut));
+    for (let k = 0; k < n; k++) piste[debut + k] += e.pcm[k];
     const nomFichier = `plans/plan-${String(i + 1).padStart(2, "0")}.wav`;
     fichiers.push({ nom: nomFichier, data: wav(e.pcm, e.rate) });
     calage.push({ plan: i + 1, nom: p.nom, enregistre: true, fichier: nomFichier, essai_garde: garde[i] + 1, essais: essais[i].length,
