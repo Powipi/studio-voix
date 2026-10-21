@@ -41,6 +41,9 @@ main { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); ga
 .niveau i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .05s linear; }
 .niveau.fort i { background: var(--direct); }
 .etat { color: var(--doux); min-height: 1.4em; }
+.micro { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--doux); }
+.micro select { max-width: 100%; font: 13px/1.2 var(--f-texte); padding: 6px 8px; border-radius: 8px; border: 1px solid var(--trait); background: var(--surface); color: var(--encre); }
+.alerte { margin: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--direct); color: var(--encre); background: var(--surface); }
 .barre { display: flex; flex-wrap: wrap; gap: 8px; }
 button { font: 600 14px/1 var(--f-texte); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--trait); background: var(--surface); color: var(--encre); cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--doux); }
@@ -91,6 +94,11 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
       </label>
     </div>
     <div class="niveau" id="niveau" title="Niveau du micro"><i></i></div>
+    <div class="micro" id="micro" hidden>
+      <label>Micro <select id="micro-choix"></select></label>
+      <span id="micro-info"></span>
+    </div>
+    <p class="alerte" id="alerte-micro" role="alert" hidden></p>
     <div class="etat" id="etat" role="status">Autorise le micro pour commencer.</div>
     <div class="barre">
       <button id="btn-micro" class="principal">Autoriser le micro</button>
@@ -270,28 +278,70 @@ function rendre() {
 }
 
 // ---------- Micro ----------
+// Qualité : on choisit le micro (le navigateur prend parfois un micro « mains libres » ou celui de la webcam,
+// qui coupe les aigus), on affiche sa fréquence d'échantillonnage, et chaque prise est contrôlée (aigus présents ?).
+let src = null, microInfo = { nom: "", echantillonnage: null };
+const SUSPECT = /mains.?libres|hands.?free|bluetooth|airpods|buds|headset|casque|webcam|camera|caméra/i;
+function alerteMicro(texte) { const a = $("alerte-micro"); a.textContent = texte || ""; a.hidden = !texte; }
+async function ouvrirMicro(id) {
+  const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1, sampleRate: { ideal: 48000 } };
+  if (id) audio.deviceId = { exact: id };
+  const nouveau = await navigator.mediaDevices.getUserMedia({ audio });
+  if (flux) flux.getTracks().forEach((t) => t.stop());
+  flux = nouveau;
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!capture) {
+    capture = ctx.createScriptProcessor(4096, 1, 1);
+    capture.onaudioprocess = (ev) => {
+      const d = ev.inputBuffer.getChannelData(0);
+      let crete = 0; for (let k = 0; k < d.length; k++) crete = Math.max(crete, Math.abs(d[k]));
+      const niv = $("niveau"); niv.firstElementChild.style.width = Math.min(100, crete * 140) + "%";
+      niv.classList.toggle("fort", crete > 0.95);
+      if (enCours && enCours.actif) enCours.tampons.push(new Float32Array(d));
+    };
+    capture.connect(ctx.destination);
+  }
+  if (src) src.disconnect();
+  src = ctx.createMediaStreamSource(flux); src.connect(capture);
+  const piste = flux.getAudioTracks()[0], reglages = piste.getSettings ? piste.getSettings() : {};
+  microInfo = { nom: piste.label || "micro", echantillonnage: reglages.sampleRate || null };
+  const sel = $("micro-choix"), appareils = (await navigator.mediaDevices.enumerateDevices()).filter((a) => a.kind === "audioinput");
+  sel.replaceChildren(...appareils.map((a, k) => { const o = document.createElement("option"); o.value = a.deviceId; o.textContent = a.label || `Micro ${k + 1}`; return o; }));
+  if (reglages.deviceId) sel.value = reglages.deviceId;
+  $("micro").hidden = false;
+  $("micro-info").textContent = microInfo.echantillonnage ? `${(microInfo.echantillonnage / 1000).toLocaleString("fr-FR")} kHz` : "";
+  const bas = microInfo.echantillonnage && microInfo.echantillonnage < 44100;
+  alerteMicro(bas || SUSPECT.test(microInfo.nom)
+    ? `Attention : « ${microInfo.nom} »${bas ? ` n'enregistre qu'à ${microInfo.echantillonnage / 1000} kHz` : " ressemble à un micro de casque ou de webcam"}, le son risque d'être étouffé. Choisis le micro que tu utilises dans Audacity.`
+    : "");
+}
+// Contrôle des aigus d'une prise : énergie au-dessus de 12,5 kHz (4 filtres passe-haut en cascade) par rapport au total.
+// Repères mesurés : prises Audacity des Reels 1 et 2 vers -44 dB ; prise du studio du Reel 3 (aigus coupés vers 11 kHz) vers -57 à -64 dB. Seuil : -50 dB.
+async function aigus(pcm, rate) {
+  if (pcm.length < rate) return null;
+  const oc = new OfflineAudioContext(1, pcm.length, rate), b = oc.createBuffer(1, pcm.length, rate);
+  b.copyToChannel(pcm, 0);
+  const s = oc.createBufferSource(); s.buffer = b; let n = s;
+  for (let k = 0; k < 4; k++) { const f = oc.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 12500; f.Q.value = Math.SQRT1_2; n.connect(f); n = f; }
+  n.connect(oc.destination); s.start();
+  const y = (await oc.startRendering()).getChannelData(0);
+  let ex = 0, ey = 0; for (let k = 0; k < pcm.length; k++) { ex += pcm[k] * pcm[k]; ey += y[k] * y[k]; }
+  return ex > 0 ? 10 * Math.log10(ey / ex + 1e-12) : null;
+}
 $("btn-micro").onclick = async () => {
-  try {
-    flux = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
-  } catch (e) {
+  try { await ouvrirMicro(null); }
+  catch (e) {
     $("etat").textContent = "Micro refusé ou introuvable. Autorise-le dans le navigateur, puis recharge la page.";
     return;
   }
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const src = ctx.createMediaStreamSource(flux);
-  capture = ctx.createScriptProcessor(4096, 1, 1);
-  const tampons = [];
-  capture.onaudioprocess = (ev) => {
-    const d = ev.inputBuffer.getChannelData(0);
-    let crete = 0; for (let k = 0; k < d.length; k++) crete = Math.max(crete, Math.abs(d[k]));
-    const niv = $("niveau"); niv.firstElementChild.style.width = Math.min(100, crete * 140) + "%";
-    niv.classList.toggle("fort", crete > 0.95);
-    if (enCours && enCours.actif) enCours.tampons.push(new Float32Array(d));
-  };
-  src.connect(capture); capture.connect(ctx.destination);
   $("btn-micro").hidden = true;
-  $("etat").textContent = "Micro prêt. Choisis un plan et clique sur « Enregistrer ».";
+  $("etat").textContent = "Micro prêt. Vérifie le micro choisi, puis choisis un plan et clique sur « Enregistrer ».";
   rendre();
+};
+$("micro-choix").onchange = async (ev) => {
+  if (enCours) return;
+  try { await ouvrirMicro(ev.target.value); $("etat").textContent = `Micro : ${microInfo.nom}.`; }
+  catch (e) { $("etat").textContent = "Ce micro ne répond pas. Choisis-en un autre."; }
 };
 
 // ---------- Enregistrement d'un plan ----------
@@ -328,7 +378,10 @@ async function enregistrer(i) {
   const total = tampons.reduce((s, t) => s + t.length, 0);
   const pcm = new Float32Array(total); let o = 0;
   for (const t of tampons) { pcm.set(t, o); o += t.length; }
-  essais[i].push({ pcm, rate: ctx.sampleRate, t: Date.now() });
+  essais[i].push({ pcm, rate: ctx.sampleRate, t: Date.now(), micro: microInfo.nom });
+  const hf = await aigus(pcm, ctx.sampleRate).catch(() => null);
+  if (hf !== null && hf >= -50) alerteMicro("");
+  else if (hf !== null) alerteMicro(`Cette prise n'a presque pas d'aigus (son étouffé, ${Math.round(hf)} dB au-dessus de 12,5 kHz). Change de micro dans la liste, puis refais un essai.`);
   garde[i] = essais[i].length - 1;
   await sauver(i);
   $("etat").textContent = `Essai ${essais[i].length} du plan ${i + 1} enregistré. Écoute-le, ou passe au plan suivant.`;
@@ -407,7 +460,7 @@ $("btn-export").onclick = () => {
       debut_dans_voix_s: +(p.debut - origine).toFixed(3), debut_dans_preversion_s: p.debut, duree_plan_s: p.duree, duree_prise_s: +(e.pcm.length / e.rate).toFixed(3) });
   });
   fichiers.unshift({ nom: "voix.wav", data: wav(piste, rate) });
-  fichiers.push({ nom: "calage.json", data: new TextEncoder().encode(JSON.stringify({ reel: D.reel, echantillonnage: rate, queue_s: QUEUE_S, compteur: bilan(), plans: calage }, null, 2)) });
+  fichiers.push({ nom: "calage.json", data: new TextEncoder().encode(JSON.stringify({ reel: D.reel, echantillonnage: rate, micro: microInfo, queue_s: QUEUE_S, compteur: bilan(), plans: calage }, null, 2)) });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(zip(fichiers));
   a.download = `voix-${D.reel}.zip`;
