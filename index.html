@@ -69,6 +69,8 @@ button.mini { padding: 6px 10px; font-size: 13px; }
 .essai { font: 600 13px/1 var(--f-texte); padding: 7px 10px; border-radius: 99px; border: 1px solid var(--trait); background: transparent; color: var(--encre); }
 .essai[aria-pressed="true"] { background: var(--ok); border-color: var(--ok); color: #fff; }
 .vide { color: var(--doux); font-size: 13px; }
+button.effacer { margin-left: auto; font-weight: 500; color: var(--doux); }
+button.effacer:hover:not(:disabled) { color: var(--direct); border-color: var(--direct); }
 .testeur { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--trait); border-radius: 10px; background: var(--surface); }
 .testeur .tete { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
 .testeur .tete strong { font: 700 15px/1.2 var(--f-titre); }
@@ -121,7 +123,7 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
       <span id="micro-info"></span>
     </div>
     <p class="alerte" id="alerte-micro" role="alert" hidden></p>
-    <section class="testeur" id="testeur" aria-label="Testeur de micro" hidden>
+    <section class="testeur" id="testeur" aria-label="Testeur de micro">
       <div class="tete">
         <strong>Testeur de micro</strong>
         <button id="btn-test">Tester le micro</button>
@@ -229,11 +231,11 @@ const titre = `${D.reel} · ${D.plans.length} plans · ${fr(D.plans.reduce((s, p
 // Compteur (garde-fou non bloquant) : essais, minutes enregistrées, temps passé (pauses de plus de 30 min non comptées).
 function bilan() {
   const tous = essais.flat().filter((e) => !e.assemble).concat(mEssais.flat(2));
-  const t = tous.map((e) => e.t).filter(Boolean).sort((a, b) => a - b);
+  const t = tous.map((e) => e.t).concat(effaces.t).filter(Boolean).sort((a, b) => a - b);
   let studio = 0;
   for (let k = 1; k < t.length; k++) { const ecart = t[k] - t[k - 1]; if (ecart <= 30 * 60000) studio += ecart; }
   if (t.length) studio += 60000; // une minute pour le premier essai
-  return { essais: tous.length, enregistre_min: +(tous.reduce((s, e) => s + e.pcm.length / e.rate, 0) / 60).toFixed(1), studio_min: Math.round(studio / 60000) };
+  return { essais: tous.length + effaces.essais, enregistre_min: +((tous.reduce((s, e) => s + e.pcm.length / e.rate, 0) + effaces.sec) / 60).toFixed(1), studio_min: Math.round(studio / 60000), dont_effaces: effaces.essais };
 }
 function majMeta() { const b = bilan(); $("meta").textContent = `${titre} · ${b.essais} essai${b.essais > 1 ? "s" : ""} · ${b.studio_min} min dans le studio`; }
 
@@ -281,6 +283,8 @@ async function assembler(i) {
   return true;
 }
 let ctx = null, flux = null, capture = null, enCours = null, ecoute = null;
+// Essais effacés (bouton « Effacer les essais » d'un plan) : le compteur les garde, pour rester honnête au point hebdo.
+let effaces = { essais: 0, sec: 0, t: [] };
 
 // ---------- Persistance locale (IndexedDB) ----------
 const BASE = "studio-voix-" + D.reel;
@@ -311,6 +315,12 @@ async function sauverM(i, j) {
 async function charger() {
   base = await ouvrirBase();
   if (!base) return;
+  await new Promise((ok) => {
+    try {
+      const r = base.transaction("plans").objectStore("plans").get("effaces");
+      r.onsuccess = () => { if (r.result) effaces = r.result; ok(); }; r.onerror = () => ok();
+    } catch (e) { ok(); }
+  });
   await Promise.all(D.plans.map((_, i) => new Promise((ok) => {
     try {
       const r = base.transaction("plans").objectStore("plans").get(i);
@@ -325,6 +335,29 @@ async function charger() {
       r.onerror = () => ok();
     } catch (e) { ok(); }
   }))));
+}
+
+// ---------- Effacer les essais d'un plan (08/11) ----------
+async function effacerPlan(i) {
+  if (enCours) return;
+  const n = essais[i].filter((e) => !e.assemble).length + mEssais[i].flat().length;
+  if (!n || !confirm(`Effacer les ${n} essai${n > 1 ? "s" : ""} du plan ${i + 1} ? Ils seront perdus (le compteur d'essais les garde).`)) return;
+  arreterEcoute();
+  const compter = (e) => { if (e.assemble) return; effaces.essais += 1; effaces.sec += e.pcm.length / e.rate; if (e.t) effaces.t.push(e.t); };
+  essais[i].forEach(compter);
+  essais[i] = []; garde[i] = -1;
+  mEssais[i].forEach((x) => x.forEach(compter));
+  mEssais[i] = mEssais[i].map(() => []); mGarde[i] = mGarde[i].map(() => -1);
+  if (base) {
+    try {
+      const st = base.transaction("plans", "readwrite").objectStore("plans");
+      st.delete(i);
+      mEssais[i].forEach((_, j) => st.delete(`m${i}-${j}`));
+      st.put(effaces, "effaces");
+    } catch (e) {}
+  }
+  $("etat").textContent = `Essais du plan ${i + 1} effacés. Tu peux le réenregistrer.`;
+  rendre();
 }
 
 // ---------- Affichage des plans ----------
@@ -365,6 +398,12 @@ function rendre() {
       ec.textContent = "▶ Écouter avec l'image"; ec.disabled = !!enCours;
       ec.onclick = () => ecouter(i);
       ligne.append(ec);
+    }
+    if ((n > 0 || mEssais[i].some((x) => x.length))) {
+      const ef = document.createElement("button"); ef.id = "efface-" + i; ef.className = "effacer";
+      ef.textContent = "Effacer les essais"; ef.title = "Repartir de zéro sur ce plan"; ef.disabled = !!enCours;
+      ef.onclick = () => effacerPlan(i);
+      ligne.append(ef);
     }
     li.append(tete, voix, ligne);
     if (morceaux[i].length) {
@@ -573,7 +612,8 @@ function arreterTest() {
 }
 $("btn-test").onclick = async () => {
   if (test.actif) { arreterTest(); return; }
-  if (!flux || enCours) return;
+  if (!flux) { await $("btn-micro").onclick(); if (!flux) return; }
+  if (enCours) return;
   if (ctx.state === "suspended") await ctx.resume();
   test.tampon = new Float32Array(Math.round(6 * ctx.sampleRate)); test.pos = 0; test.plein = false; test.pause = false;
   test.actif = true;
@@ -599,7 +639,7 @@ $("btn-micro").onclick = async () => {
     return;
   }
   $("btn-micro").hidden = true;
-  $("etat").textContent = "Micro prêt. Vérifie le micro choisi, puis choisis un plan et clique sur « Enregistrer ».";
+  $("etat").textContent = "Micro prêt. Lance d'abord « Tester le micro » (juste au-dessus), puis choisis un plan et clique sur « Enregistrer ».";
   rendre();
 };
 $("micro-choix").onchange = async (ev) => {
