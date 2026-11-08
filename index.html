@@ -69,6 +69,22 @@ button.mini { padding: 6px 10px; font-size: 13px; }
 .essai { font: 600 13px/1 var(--f-texte); padding: 7px 10px; border-radius: 99px; border: 1px solid var(--trait); background: transparent; color: var(--encre); }
 .essai[aria-pressed="true"] { background: var(--ok); border-color: var(--ok); color: #fff; }
 .vide { color: var(--doux); font-size: 13px; }
+.testeur { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--trait); border-radius: 10px; background: var(--surface); }
+.testeur .tete { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
+.testeur .tete strong { font: 700 15px/1.2 var(--f-titre); }
+.testeur .consigne { margin: 0; font-size: 13px; color: var(--doux); }
+.testeur ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.testeur li { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr); gap: 2px 8px; align-items: baseline; font-size: 13px; }
+.testeur .pastille { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 700 12px/1 var(--f-texte); color: #fff; background: var(--trait); align-self: center; }
+.testeur [data-etat="ok"] .pastille { background: var(--ok); }
+.testeur [data-etat="moyen"] .pastille { background: var(--accent); }
+.testeur [data-etat="mauvais"] .pastille { background: var(--direct); }
+.testeur .lib { font-weight: 600; }
+.testeur .val { justify-self: end; text-align: right; overflow-wrap: anywhere; font: 13px/1.2 var(--f-chiffres); font-variant-numeric: tabular-nums; color: var(--encre); }
+.testeur .conseil { grid-column: 2 / -1; color: var(--doux); }
+.testeur .verdict { margin: 0; font-weight: 600; }
+.testeur .verdict[data-etat="ok"] { color: var(--ok); }
+.testeur .verdict[data-etat="mauvais"] { color: var(--direct); }
 footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; max-width: 70ch; }
 @media (prefers-reduced-motion: reduce) { .niveau i { transition: none; } }
 </style>
@@ -105,6 +121,24 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
       <span id="micro-info"></span>
     </div>
     <p class="alerte" id="alerte-micro" role="alert" hidden></p>
+    <section class="testeur" id="testeur" aria-label="Testeur de micro" hidden>
+      <div class="tete">
+        <strong>Testeur de micro</strong>
+        <button id="btn-test">Tester le micro</button>
+      </div>
+      <p class="consigne" id="test-consigne">Avant d'enregistrer : vérifie en direct ton niveau, le bruit de la pièce et ta position face au micro. Rien n'est enregistré.</p>
+      <ul id="test-mesures" hidden>
+        <li id="t-micro"><span class="pastille" aria-hidden="true"></span><span class="lib">Micro</span><span class="val"></span><span class="conseil"></span></li>
+        <li id="t-bruit"><span class="pastille" aria-hidden="true"></span><span class="lib">Bruit de la pièce</span><span class="val"></span><span class="conseil"></span></li>
+        <li id="t-niveau"><span class="pastille" aria-hidden="true"></span><span class="lib">Niveau de ta voix</span><span class="val"></span><span class="conseil"></span></li>
+        <li id="t-ecart"><span class="pastille" aria-hidden="true"></span><span class="lib">Voix au-dessus du bruit</span><span class="val"></span><span class="conseil"></span></li>
+        <li id="t-position"><span class="pastille" aria-hidden="true"></span><span class="lib">Position (aigus)</span><span class="val"></span><span class="conseil"></span></li>
+      </ul>
+      <p class="verdict" id="test-verdict" role="status" hidden></p>
+      <div class="barre" id="test-actions" hidden>
+        <button id="btn-reecoute">Réécouter les 5 dernières secondes</button>
+      </div>
+    </section>
     <div class="etat" id="etat" role="status">Autorise le micro pour commencer.</div>
     <div class="barre">
       <button id="btn-micro" class="principal">Autoriser le micro</button>
@@ -394,6 +428,7 @@ async function ouvrirMicro(id) {
       const niv = $("niveau"); niv.firstElementChild.style.width = Math.min(100, crete * 140) + "%";
       niv.classList.toggle("fort", crete > 0.95);
       if (enCours && enCours.actif) enCours.tampons.push(new Float32Array(d));
+      if (test.actif && !test.pause && !enCours) test.ajouter(d);
     };
     capture.connect(ctx.destination);
   }
@@ -405,6 +440,7 @@ async function ouvrirMicro(id) {
   sel.replaceChildren(...appareils.map((a, k) => { const o = document.createElement("option"); o.value = a.deviceId; o.textContent = a.label || `Micro ${k + 1}`; return o; }));
   if (reglages.deviceId) sel.value = reglages.deviceId;
   $("micro").hidden = false;
+  $("testeur").hidden = false;
   $("micro-info").textContent = microInfo.echantillonnage ? `${(microInfo.echantillonnage / 1000).toLocaleString("fr-FR")} kHz` : "";
   const bas = microInfo.echantillonnage && microInfo.echantillonnage < 44100;
   alerteMicro(bas || SUSPECT.test(microInfo.nom)
@@ -457,6 +493,105 @@ async function timbre(pcm, rate) {
   for (let i = 0; i < nb; i++) if (e[i] >= seuil) { sm += em[i]; sh += eh[i]; }
   return sm > 0 ? 10 * Math.log10(sh / sm + 1e-12) : null;
 }
+// ---------- Testeur de micro (08/11) ----------
+// En direct, avant d'enregistrer : on garde les 6 dernières secondes du micro et on les mesure deux fois par seconde.
+// Seuils tirés des prises de Stéphane (Yeti) : bruit de la pièce entre -64 et -57 dBFS ; voix à 30 à 37 dB au-dessus ;
+// position : SEUIL_TIMBRE (Audacity 17,5 à 18,6 ; séances ternes 6,7 à 10,9).
+const test = {
+  actif: false, pause: false, tampon: null, pos: 0, plein: false, minuterie: null, calcul: false,
+  ajouter(d) {
+    const t = this.tampon; if (!t) return;
+    for (let k = 0; k < d.length; k++) { t[this.pos] = d[k]; this.pos = (this.pos + 1) % t.length; if (this.pos === 0) this.plein = true; }
+  },
+  dernieres(s) {
+    const t = this.tampon, n = Math.min(this.plein ? t.length : this.pos, Math.round(s * ctx.sampleRate)), out = new Float32Array(n);
+    for (let k = 0; k < n; k++) out[k] = t[(this.pos - n + k + t.length) % t.length];
+    return out;
+  },
+};
+const dbfs = (v) => 20 * Math.log10(v + 1e-9);
+const nb1 = (x) => x.toLocaleString("fr-FR", { maximumFractionDigits: 1 });
+function mesure(id, etat, val, conseil) {
+  const li = $(id); li.dataset.etat = etat || "";
+  li.querySelector(".pastille").textContent = etat === "ok" ? "✓" : etat === "moyen" ? "!" : etat === "mauvais" ? "✕" : "…";
+  li.querySelector(".val").textContent = val || "";
+  li.querySelector(".conseil").textContent = conseil || "";
+}
+async function analyserTest() {
+  if (!test.actif || test.calcul || enCours) return;
+  test.calcul = true;
+  try {
+    const x = test.dernieres(6), rate = ctx.sampleRate, w = Math.round(0.05 * rate), nb = Math.floor(x.length / w);
+    // Micro
+    const bas = microInfo.echantillonnage && microInfo.echantillonnage < 44100, suspect = SUSPECT.test(microInfo.nom);
+    mesure("t-micro", bas || suspect ? "mauvais" : "ok", `${microInfo.nom}${microInfo.echantillonnage ? ` · ${nb1(microInfo.echantillonnage / 1000)} kHz` : ""}`,
+      bas || suspect ? "Ce micro risque d'étouffer ta voix : choisis le Yeti dans la liste." : "");
+    if (nb < 20) { mesure("t-bruit", "", "…", "Mesure en cours…"); test.calcul = false; return; }
+    const e = [];
+    for (let i = 0; i < nb; i++) { let a = 0; for (let k = i * w; k < (i + 1) * w; k++) a += x[k] * x[k]; e.push(dbfs(Math.sqrt(a / w))); }
+    const tri = [...e].sort((a, b) => a - b), bruit = tri[Math.floor(0.1 * nb)];
+    let crete = 0; for (let k = 0; k < x.length; k++) crete = Math.max(crete, Math.abs(x[k]));
+    const creteDb = dbfs(crete), parle = e.filter((v) => v > bruit + 10), voix = parle.length ? [...parle].sort((a, b) => a - b)[Math.floor(parle.length / 2)] : null;
+    const parole = parle.length * 0.05;
+    // Bruit de la pièce
+    if (bruit <= -55) mesure("t-bruit", "ok", `${nb1(bruit)} dBFS`, "");
+    else if (bruit <= -45) mesure("t-bruit", "moyen", `${nb1(bruit)} dBFS`, "Un peu de bruit : ventilateur, frigo, fenêtre ? Éloigne-le du micro si tu peux.");
+    else mesure("t-bruit", "mauvais", `${nb1(bruit)} dBFS`, "Trop de bruit de fond, ou tu parles sans arrêt : reste silencieux 2 secondes pour le mesurer.");
+    // Niveau de la voix (crête)
+    if (parole < 1) {
+      mesure("t-niveau", "", "…", "Lis une phrase du plan 1, à voix normale, en regardant l'écran.");
+      mesure("t-ecart", "", "…", ""); mesure("t-position", "", "…", "");
+    } else {
+      if (creteDb > -1) mesure("t-niveau", "mauvais", `crête ${nb1(creteDb)} dB`, "Ça sature : baisse le gain du Yeti (molette à l'arrière).");
+      else if (creteDb > -4) mesure("t-niveau", "moyen", `crête ${nb1(creteDb)} dB`, "Un peu fort : baisse légèrement le gain, vise une crête vers -10 dB.");
+      else if (creteDb >= -18) mesure("t-niveau", "ok", `crête ${nb1(creteDb)} dB`, "");
+      else mesure("t-niveau", "moyen", `crête ${nb1(creteDb)} dB`, "Un peu faible : monte le gain du Yeti ou rapproche-toi, vise une crête vers -10 dB.");
+      const ecart = voix - bruit;
+      if (ecart >= 30) mesure("t-ecart", "ok", `${nb1(ecart)} dB`, "");
+      else if (ecart >= 22) mesure("t-ecart", "moyen", `${nb1(ecart)} dB`, "Rapproche-toi du micro : ta voix passera mieux au-dessus du bruit.");
+      else mesure("t-ecart", "mauvais", `${nb1(ecart)} dB`, "Ta voix se détache mal du bruit : rapproche-toi du micro et coupe ce qui fait du bruit.");
+      if (parole >= 1.5) {
+        const tb = await timbre(x, rate).catch(() => null);
+        if (tb === null) mesure("t-position", "", "…", "");
+        else if (tb >= SEUIL_TIMBRE) mesure("t-position", "ok", `${nb1(tb)} dB`, "");
+        else mesure("t-position", tb >= SEUIL_TIMBRE - 3 ? "moyen" : "mauvais", `${nb1(tb)} dB (14 ou plus)`,
+          "Voix terne : tu es trop loin ou de biais. Le Yeti entre ta bouche et l'écran, logo face à toi, à 10-15 cm.");
+      } else mesure("t-position", "", "…", "Continue à lire quelques secondes.");
+    }
+    const etats = ["t-micro", "t-bruit", "t-niveau", "t-ecart", "t-position"].map((id) => $(id).dataset.etat);
+    const v = $("test-verdict"); v.hidden = false;
+    if (etats.includes("mauvais")) { v.dataset.etat = "mauvais"; v.textContent = "À corriger avant d'enregistrer : suis le conseil en rouge."; }
+    else if (etats.some((t) => !t)) { v.dataset.etat = ""; v.textContent = "Reste silencieux 2 secondes, puis lis une phrase à voix normale."; }
+    else if (etats.every((t) => t === "ok")) { v.dataset.etat = "ok"; v.textContent = "Tout est bon : tu peux enregistrer."; }
+    else { v.dataset.etat = "moyen"; v.textContent = "Presque : un réglage à affiner (en orange), ou enregistre quand même."; }
+  } finally { test.calcul = false; }
+}
+function arreterTest() {
+  test.actif = false; clearInterval(test.minuterie);
+  $("btn-test").textContent = "Tester le micro";
+  $("test-actions").hidden = true;
+}
+$("btn-test").onclick = async () => {
+  if (test.actif) { arreterTest(); return; }
+  if (!flux || enCours) return;
+  if (ctx.state === "suspended") await ctx.resume();
+  test.tampon = new Float32Array(Math.round(6 * ctx.sampleRate)); test.pos = 0; test.plein = false; test.pause = false;
+  test.actif = true;
+  $("btn-test").textContent = "Arrêter le test";
+  $("test-mesures").hidden = false; $("test-actions").hidden = false;
+  $("test-consigne").textContent = "1. Reste silencieux 2 secondes (bruit de la pièce). 2. Lis une phrase du plan 1, à voix normale, en regardant l'écran comme pour enregistrer.";
+  ["t-micro", "t-bruit", "t-niveau", "t-ecart", "t-position"].forEach((id) => mesure(id, "", "…", ""));
+  test.minuterie = setInterval(analyserTest, 500);
+};
+$("btn-reecoute").onclick = async () => {
+  if (!test.actif || !test.tampon) return;
+  const x = test.dernieres(5); if (!x.length) return;
+  test.pause = true;
+  const b = ctx.createBuffer(1, x.length, ctx.sampleRate); b.copyToChannel(x, 0);
+  const s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start();
+  $("btn-reecoute").disabled = true;
+  s.onended = () => { test.pause = false; $("btn-reecoute").disabled = false; };
+};
 $("btn-micro").onclick = async () => {
   try { await ouvrirMicro(null); }
   catch (e) {
@@ -477,6 +612,7 @@ $("micro-choix").onchange = async (ev) => {
 function attendre(ms) { return new Promise((ok) => setTimeout(ok, ms)); }
 async function enregistrer(i, j = null) {
   if (!flux || enCours) return;
+  if (test.actif) arreterTest();
   if (ctx.state === "suspended") await ctx.resume();
   const p = D.plans[i], m = j == null ? null : morceaux[i][j];
   enCours = { i, j, actif: false, tampons: [], annule: false };
