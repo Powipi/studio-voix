@@ -424,6 +424,39 @@ async function aigus(pcm, rate) {
   let ex = 0, ey = 0; for (let k = 0; k < pcm.length; k++) { ex += pcm[k] * pcm[k]; ey += y[k] * y[k]; }
   return ex > 0 ? 10 * Math.log10(ey / ex + 1e-12) : null;
 }
+// Contrôle de la position (08/11) : rapport, sur les passages parlés, entre l'énergie de 6 à 12 kHz et celle autour
+// de 1 kHz. Loin du micro ou de biais (le Yeti se parle par le côté, face au logo), les aigus tombent : voix terne.
+// Repères mesurés le 08/11 (même calcul, dans Chromium) : prises Audacity des Reels 1 et 2 : 17,5 et 18,6 dB ;
+// meilleure séance du studio (Reel 9 v1) : 16,5 ; séances ternes : 6,7 à 10,9 (2 à 12 dB d'aigus en moins à l'analyse).
+// Seuil : 14 dB, soit environ 4 dB sous Audacity.
+const SEUIL_TIMBRE = 14;
+async function timbre(pcm, rate) {
+  if (pcm.length < rate) return null;
+  const oc = new OfflineAudioContext(2, pcm.length, rate), b = oc.createBuffer(1, pcm.length, rate);
+  b.copyToChannel(pcm, 0);
+  const s = oc.createBufferSource(); s.buffer = b;
+  const fusion = oc.createChannelMerger(2);
+  let n = s;   // canal 0 : autour de 1 kHz (800 à 1 250 Hz environ)
+  for (let k = 0; k < 2; k++) { const f = oc.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 1000; f.Q.value = 2.2; n.connect(f); n = f; }
+  n.connect(fusion, 0, 0);
+  n = s;       // canal 1 : 6 à 12 kHz
+  for (const [type, fq] of [["highpass", 6000], ["highpass", 6000], ["lowpass", 12000], ["lowpass", 12000]]) {
+    const f = oc.createBiquadFilter(); f.type = type; f.frequency.value = fq; f.Q.value = Math.SQRT1_2; n.connect(f); n = f;
+  }
+  n.connect(fusion, 0, 1);
+  fusion.connect(oc.destination); s.start();
+  const r = await oc.startRendering(), m = r.getChannelData(0), h = r.getChannelData(1);
+  const w = Math.round(0.02 * rate), nb = Math.floor(pcm.length / w), e = [], em = [], eh = [];
+  for (let i = 0; i < nb; i++) {
+    let a = 0, c = 0, d = 0;
+    for (let k = i * w; k < (i + 1) * w; k++) { a += pcm[k] * pcm[k]; c += m[k] * m[k]; d += h[k] * h[k]; }
+    e.push(a); em.push(c); eh.push(d);
+  }
+  const seuil = [...e].sort((x, y) => x - y)[Math.floor(0.6 * nb)];
+  let sm = 0, sh = 0;
+  for (let i = 0; i < nb; i++) if (e[i] >= seuil) { sm += em[i]; sh += eh[i]; }
+  return sm > 0 ? 10 * Math.log10(sh / sm + 1e-12) : null;
+}
 $("btn-micro").onclick = async () => {
   try { await ouvrirMicro(null); }
   catch (e) {
@@ -486,8 +519,11 @@ async function enregistrer(i, j = null) {
   }
   essais[i].push({ pcm, rate: ctx.sampleRate, t: Date.now(), micro: microInfo.nom });
   const hf = await aigus(pcm, ctx.sampleRate).catch(() => null);
-  if (hf !== null && hf >= -50) alerteMicro("");
-  else if (hf !== null) alerteMicro(`Cette prise n'a presque pas d'aigus (son étouffé, ${Math.round(hf)} dB au-dessus de 12,5 kHz). Change de micro dans la liste, puis refais un essai.`);
+  const tb = await timbre(pcm, ctx.sampleRate).catch(() => null);
+  essais[i][essais[i].length - 1].timbre = tb === null ? null : +tb.toFixed(1);
+  if (hf !== null && hf < -50) alerteMicro(`Cette prise n'a presque pas d'aigus (son étouffé, ${Math.round(hf)} dB au-dessus de 12,5 kHz). Change de micro dans la liste, puis refais un essai.`);
+  else if (tb !== null && tb < SEUIL_TIMBRE) alerteMicro(`Ta voix sonne terne sur cette prise (aigus à ${tb.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} dB, il faut ${SEUIL_TIMBRE} ou plus) : tu es trop loin du micro ou de biais. Place le Yeti entre ta bouche et l'écran, logo face à toi, à 10-15 cm, puis refais un essai.`);
+  else alerteMicro("");
   garde[i] = essais[i].length - 1;
   await sauver(i);
   $("etat").textContent = `Essai ${essais[i].length} du plan ${i + 1} enregistré. Écoute-le, ou passe au plan suivant.`;
@@ -576,7 +612,7 @@ $("btn-export").onclick = () => {
     const nomFichier = `plans/plan-${String(i + 1).padStart(2, "0")}.wav`;
     fichiers.push({ nom: nomFichier, data: wav(e.pcm, e.rate) });
     calage.push({ plan: i + 1, nom: p.nom, enregistre: true, fichier: nomFichier, essai_garde: garde[i] + 1, essais: essais[i].length, par_morceaux: !!e.assemble, morceaux: e.assemble ? morceaux[i].length : 0,
-      debut_dans_voix_s: +(p.debut - origine).toFixed(3), debut_dans_preversion_s: p.debut, duree_plan_s: p.duree, duree_prise_s: +(e.pcm.length / e.rate).toFixed(3) });
+      debut_dans_voix_s: +(p.debut - origine).toFixed(3), debut_dans_preversion_s: p.debut, duree_plan_s: p.duree, duree_prise_s: +(e.pcm.length / e.rate).toFixed(3), timbre_db: e.timbre ?? null });
   });
   fichiers.unshift({ nom: "voix.wav", data: wav(piste, rate) });
   fichiers.push({ nom: "calage.json", data: new TextEncoder().encode(JSON.stringify({ reel: D.reel, echantillonnage: rate, micro: microInfo, queue_s: QUEUE_S, compteur: bilan(), plans: calage }, null, 2)) });
