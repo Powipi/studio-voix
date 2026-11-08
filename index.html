@@ -71,7 +71,10 @@ button.mini { padding: 6px 10px; font-size: 13px; }
 .vide { color: var(--doux); font-size: 13px; }
 button.effacer { margin-left: auto; font-weight: 500; color: var(--doux); }
 button.effacer:hover:not(:disabled) { color: var(--direct); border-color: var(--direct); }
-.testeur { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--trait); border-radius: 10px; background: var(--surface); }
+.modale { width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--trait); border-radius: 14px; background: var(--surface); color: var(--encre); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.modale::backdrop { background: rgba(10, 12, 20, .55); }
+.testeur { display: grid; gap: 10px; padding: 16px; }
+.testeur .fermer { padding: 6px 10px; }
 .testeur .tete { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
 .testeur .tete strong { font: 700 15px/1.2 var(--f-titre); }
 .testeur .consigne { margin: 0; font-size: 13px; color: var(--doux); }
@@ -123,10 +126,11 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
       <span id="micro-info"></span>
     </div>
     <p class="alerte" id="alerte-micro" role="alert" hidden></p>
-    <section class="testeur" id="testeur" aria-label="Testeur de micro">
+    <dialog class="modale" id="modale-test" aria-labelledby="titre-test">
+    <section class="testeur" id="testeur">
       <div class="tete">
-        <strong>Testeur de micro</strong>
-        <button id="btn-test">Tester le micro</button>
+        <strong id="titre-test">Testeur de micro</strong>
+        <button id="btn-fermer-test" class="fermer" aria-label="Fermer le testeur">✕</button>
       </div>
       <p class="consigne" id="test-consigne">Avant d'enregistrer : vérifie en direct ton niveau, le bruit de la pièce et ta position face au micro. Rien n'est enregistré.</p>
       <ul id="test-mesures" hidden>
@@ -137,13 +141,17 @@ footer { padding: 0 max(16px, 3vw) 40px; color: var(--doux); font-size: 13px; ma
         <li id="t-position"><span class="pastille" aria-hidden="true"></span><span class="lib">Position (aigus)</span><span class="val"></span><span class="conseil"></span></li>
       </ul>
       <p class="verdict" id="test-verdict" role="status" hidden></p>
-      <div class="barre" id="test-actions" hidden>
+      <div class="barre" id="test-actions">
+        <button id="btn-test">Relancer le test</button>
         <button id="btn-reecoute">Réécouter les 5 dernières secondes</button>
+        <button id="btn-fini-test" class="principal">Fermer</button>
       </div>
     </section>
+    </dialog>
     <div class="etat" id="etat" role="status">Autorise le micro pour commencer.</div>
     <div class="barre">
       <button id="btn-micro" class="principal">Autoriser le micro</button>
+      <button id="btn-ouvrir-test">🎙 Tester le micro</button>
       <button id="btn-stop" disabled>Arrêter (Échap)</button>
       <button id="btn-export" disabled>Exporter la voix</button>
     </div>
@@ -607,22 +615,25 @@ async function analyserTest() {
 }
 function arreterTest() {
   test.actif = false; clearInterval(test.minuterie);
-  $("btn-test").textContent = "Tester le micro";
-  $("test-actions").hidden = true;
 }
-$("btn-test").onclick = async () => {
-  if (test.actif) { arreterTest(); return; }
+async function lancerTest() {
+  if (test.actif) arreterTest();
   if (!flux) { await $("btn-micro").onclick(); if (!flux) return; }
   if (enCours) return;
   if (ctx.state === "suspended") await ctx.resume();
   test.tampon = new Float32Array(Math.round(6 * ctx.sampleRate)); test.pos = 0; test.plein = false; test.pause = false;
   test.actif = true;
-  $("btn-test").textContent = "Arrêter le test";
-  $("test-mesures").hidden = false; $("test-actions").hidden = false;
+  $("test-mesures").hidden = false;
   $("test-consigne").textContent = "1. Reste silencieux 2 secondes (bruit de la pièce). 2. Lis une phrase du plan 1, à voix normale, en regardant l'écran comme pour enregistrer.";
   ["t-micro", "t-bruit", "t-niveau", "t-ecart", "t-position"].forEach((id) => mesure(id, "", "…", ""));
   test.minuterie = setInterval(analyserTest, 500);
-};
+}
+$("btn-test").onclick = () => lancerTest();
+$("btn-ouvrir-test").onclick = () => { const m = $("modale-test"); if (!m.open) m.showModal(); lancerTest(); };
+const fermerTest = () => $("modale-test").close();
+$("btn-fermer-test").onclick = fermerTest;
+$("btn-fini-test").onclick = fermerTest;
+$("modale-test").addEventListener("close", () => arreterTest());
 $("btn-reecoute").onclick = async () => {
   if (!test.actif || !test.tampon) return;
   const x = test.dernieres(5); if (!x.length) return;
@@ -639,7 +650,7 @@ $("btn-micro").onclick = async () => {
     return;
   }
   $("btn-micro").hidden = true;
-  $("etat").textContent = "Micro prêt. Lance d'abord « Tester le micro » (juste au-dessus), puis choisis un plan et clique sur « Enregistrer ».";
+  $("etat").textContent = "Micro prêt. Lance d'abord « 🎙 Tester le micro » (juste en dessous), puis choisis un plan et clique sur « Enregistrer ».";
   rendre();
 };
 $("micro-choix").onchange = async (ev) => {
@@ -652,6 +663,7 @@ $("micro-choix").onchange = async (ev) => {
 function attendre(ms) { return new Promise((ok) => setTimeout(ok, ms)); }
 async function enregistrer(i, j = null) {
   if (!flux || enCours) return;
+  if ($("modale-test").open) $("modale-test").close();
   if (test.actif) arreterTest();
   if (ctx.state === "suspended") await ctx.resume();
   const p = D.plans[i], m = j == null ? null : morceaux[i][j];
