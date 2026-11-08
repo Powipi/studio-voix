@@ -60,6 +60,12 @@ ol.plans { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .plan .duree { margin-left: auto; font: 13px/1 var(--f-chiffres); color: var(--doux); font-variant-numeric: tabular-nums; }
 .plan .voix { margin: 0; color: var(--doux); }
 .essais { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.morceaux { border-top: 1px dashed var(--trait); padding-top: 6px; }
+.morceaux summary { cursor: pointer; color: var(--doux); font-size: 13px; }
+.morceau { display: grid; gap: 4px; margin-top: 8px; padding-left: 10px; border-left: 3px solid var(--trait); }
+.morceau.fait { border-left-color: var(--direct); }
+.morceau .texte { margin: 0; font-size: 14px; }
+button.mini { padding: 6px 10px; font-size: 13px; }
 .essai { font: 600 13px/1 var(--f-texte); padding: 7px 10px; border-radius: 99px; border: 1px solid var(--trait); background: transparent; color: var(--encre); }
 .essai[aria-pressed="true"] { background: var(--ok); border-color: var(--ok); color: #fff; }
 .vide { color: var(--doux); font-size: 13px; }
@@ -188,7 +194,7 @@ const fr = (x) => x.toFixed(1).replace(".", ",");
 const titre = `${D.reel} · ${D.plans.length} plans · ${fr(D.plans.reduce((s, p) => s + p.duree, 0))} s`;
 // Compteur (garde-fou non bloquant) : essais, minutes enregistrées, temps passé (pauses de plus de 30 min non comptées).
 function bilan() {
-  const tous = essais.flat();
+  const tous = essais.flat().filter((e) => !e.assemble).concat(mEssais.flat(2));
   const t = tous.map((e) => e.t).filter(Boolean).sort((a, b) => a - b);
   let studio = 0;
   for (let k = 1; k < t.length; k++) { const ecart = t[k] - t[k - 1]; if (ecart <= 30 * 60000) studio += ecart; }
@@ -199,6 +205,47 @@ function majMeta() { const b = bilan(); $("meta").textContent = `${titre} · ${b
 
 // État : essais[i] = [{pcm: Float32Array, rate}], garde[i] = index de l'essai gardé
 const essais = D.plans.map(() => []), garde = D.plans.map(() => -1);
+// Morceaux (08/11, demande de Stéphane) : un plan long se découpe en phrases, enregistrées une à une ;
+// les meilleures prises sont recollées en une prise du plan (« assemblée »). Les plans et leur calage ne changent pas.
+function mots(t) { return t.split(/\s+/).filter((x) => /[\p{L}\p{N}]/u.test(x)).length; }
+function decouper(t) {
+  const brut = (t.match(/[^.?!…]+(?:[.?!…]+|$)/g) || [t]).map((x) => x.trim()).filter(Boolean);
+  const res = [];
+  for (const x of brut) {
+    if (res.length && mots(res[res.length - 1]) < 4) res[res.length - 1] += " " + x; else res.push(x);
+  }
+  if (res.length > 1 && mots(res[res.length - 1]) < 3) res[res.length - 2] += " " + res.pop();
+  return res;
+}
+const MARGE_MORCEAU_S = 1.2, BLANC_S = 0.2;
+const morceaux = D.plans.map((p) => {
+  const m = decouper(p.voix); if (m.length < 2) return [];
+  const total = mots(p.voix), parole = Math.max(0.5, p.duree - 0.75);
+  let avant = 0;
+  return m.map((texte) => { const w = mots(texte), o = { texte, decalage: parole * avant / total, duree: parole * w / total + MARGE_MORCEAU_S }; avant += w; return o; });
+});
+const ouverts = new Set();
+const mEssais = morceaux.map((m) => m.map(() => [])), mGarde = morceaux.map((m) => m.map(() => -1));
+function rogner(pcm, rate) {
+  let crete = 0; for (let k = 0; k < pcm.length; k++) crete = Math.max(crete, Math.abs(pcm[k]));
+  const seuil = Math.max(0.01, crete * 0.06), pad = Math.round(0.08 * rate);
+  let a = 0, b = pcm.length - 1;
+  while (a < b && Math.abs(pcm[a]) < seuil) a++;
+  while (b > a && Math.abs(pcm[b]) < seuil) b--;
+  return pcm.subarray(Math.max(0, a - pad), Math.min(pcm.length, b + pad));
+}
+async function assembler(i) {
+  if (!morceaux[i].length || mGarde[i].some((g) => g < 0)) return false;
+  const prises = mGarde[i].map((g, j) => mEssais[i][j][g]), rate = prises[0].rate, blanc = Math.round(BLANC_S * rate);
+  const bouts = prises.map((e) => rogner(e.pcm, e.rate));
+  const pcm = new Float32Array(bouts.reduce((s, b) => s + b.length, 0) + blanc * (bouts.length - 1));
+  let o = 0; bouts.forEach((b, k) => { pcm.set(b, o); o += b.length + (k < bouts.length - 1 ? blanc : 0); });
+  const e = { pcm, rate, t: Date.now(), assemble: true };
+  const k = essais[i].findIndex((x) => x.assemble);
+  if (k >= 0) { essais[i][k] = e; garde[i] = k; } else { essais[i].push(e); garde[i] = essais[i].length - 1; }
+  await sauver(i);
+  return true;
+}
 let ctx = null, flux = null, capture = null, enCours = null, ecoute = null;
 
 // ---------- Persistance locale (IndexedDB) ----------
@@ -217,7 +264,14 @@ async function sauver(i) {
   if (!base) return;
   try {
     const tx = base.transaction("plans", "readwrite");
-    tx.objectStore("plans").put({ essais: essais[i].map((e) => ({ rate: e.rate, pcm: e.pcm.buffer, t: e.t })), garde: garde[i] }, i);
+    tx.objectStore("plans").put({ essais: essais[i].map((e) => ({ rate: e.rate, pcm: e.pcm.slice().buffer, t: e.t, assemble: !!e.assemble })), garde: garde[i] }, i);
+  } catch (e) {}
+}
+async function sauverM(i, j) {
+  if (!base) return;
+  try {
+    const tx = base.transaction("plans", "readwrite");
+    tx.objectStore("plans").put({ essais: mEssais[i][j].map((e) => ({ rate: e.rate, pcm: e.pcm.buffer, t: e.t })), garde: mGarde[i][j] }, `m${i}-${j}`);
   } catch (e) {}
 }
 async function charger() {
@@ -226,10 +280,17 @@ async function charger() {
   await Promise.all(D.plans.map((_, i) => new Promise((ok) => {
     try {
       const r = base.transaction("plans").objectStore("plans").get(i);
-      r.onsuccess = () => { const v = r.result; if (v) { essais[i] = v.essais.map((e) => ({ rate: e.rate, pcm: new Float32Array(e.pcm), t: e.t })); garde[i] = v.garde; } ok(); };
+      r.onsuccess = () => { const v = r.result; if (v) { essais[i] = v.essais.map((e) => ({ rate: e.rate, pcm: new Float32Array(e.pcm), t: e.t, assemble: !!e.assemble })); garde[i] = v.garde; } ok(); };
       r.onerror = () => ok();
     } catch (e) { ok(); }
   })));
+  await Promise.all(morceaux.flatMap((m, i) => m.map((_, j) => new Promise((ok) => {
+    try {
+      const r = base.transaction("plans").objectStore("plans").get(`m${i}-${j}`);
+      r.onsuccess = () => { const v = r.result; if (v) { mEssais[i][j] = v.essais.map((e) => ({ rate: e.rate, pcm: new Float32Array(e.pcm), t: e.t })); mGarde[i][j] = v.garde; } ok(); };
+      r.onerror = () => ok();
+    } catch (e) { ok(); }
+  }))));
 }
 
 // ---------- Affichage des plans ----------
@@ -247,7 +308,8 @@ function rendre() {
     const n = essais[i].length;
     const rec = document.createElement("button");
     rec.className = "rec"; rec.id = "rec-" + i;
-    rec.textContent = n === 0 ? "● Enregistrer" : `● Essai ${n + 1}`;
+    const nVrais = essais[i].filter((e) => !e.assemble).length;
+    rec.textContent = nVrais === 0 ? "● Enregistrer le plan" : `● Essai ${nVrais + 1}`;
     rec.disabled = !flux || !!enCours;
     rec.onclick = () => enregistrer(i);
     ligne.append(rec);
@@ -258,7 +320,7 @@ function rendre() {
       const b = document.createElement("button");
       b.className = "essai"; b.id = `essai-${i}-${k}`;
       b.setAttribute("aria-pressed", garde[i] === k ? "true" : "false");
-      b.textContent = `${garde[i] === k ? "✓ " : ""}Essai ${k + 1} · ${fr(e.pcm.length / e.rate)} s`;
+      b.textContent = `${garde[i] === k ? "✓ " : ""}${e.assemble ? "Morceaux assemblés" : "Essai " + (k + 1)} · ${fr(e.pcm.length / e.rate)} s`;
       b.title = "Garder cet essai";
       b.disabled = !!enCours;
       b.onclick = () => { garde[i] = k; sauver(i); rendre(); };
@@ -271,6 +333,40 @@ function rendre() {
       ligne.append(ec);
     }
     li.append(tete, voix, ligne);
+    if (morceaux[i].length) {
+      const det = document.createElement("details"); det.className = "morceaux";
+      det.open = ouverts.has(i) || mEssais[i].some((x) => x.length) || (enCours && enCours.i === i && enCours.j != null);
+      det.ontoggle = () => { if (det.open) ouverts.add(i); else ouverts.delete(i); };
+      const sum = document.createElement("summary");
+      const faits = mGarde[i].filter((g) => g >= 0).length;
+      sum.textContent = `Une phrase coince ? Enregistre par morceaux (${faits}/${morceaux[i].length})`;
+      det.append(sum);
+      morceaux[i].forEach((m, j) => {
+        const bloc = document.createElement("div"); bloc.className = "morceau" + (mGarde[i][j] >= 0 ? " fait" : "");
+        const tx = document.createElement("p"); tx.className = "texte"; tx.textContent = `${j + 1}. ${m.texte}`;
+        const lg = document.createElement("div"); lg.className = "essais";
+        const nm = mEssais[i][j].length;
+        const r = document.createElement("button"); r.className = "rec mini"; r.id = `rec-${i}-${j}`;
+        r.textContent = nm === 0 ? "● Enregistrer" : `● Essai ${nm + 1}`;
+        r.disabled = !flux || !!enCours; r.onclick = () => enregistrer(i, j);
+        lg.append(r);
+        mEssais[i][j].forEach((e, k) => {
+          const b = document.createElement("button"); b.className = "essai mini";
+          b.setAttribute("aria-pressed", mGarde[i][j] === k ? "true" : "false");
+          b.textContent = `${mGarde[i][j] === k ? "✓ " : ""}${k + 1} · ${fr(e.pcm.length / e.rate)} s`;
+          b.title = "Garder cette prise"; b.disabled = !!enCours;
+          b.onclick = async () => { mGarde[i][j] = k; await sauverM(i, j); await assembler(i); rendre(); };
+          lg.append(b);
+        });
+        if (nm > 0) {
+          const ec = document.createElement("button"); ec.className = "mini"; ec.textContent = "▶ Écouter";
+          ec.disabled = !!enCours; ec.onclick = () => ecouterPcm(mEssais[i][j][mGarde[i][j]], D.plans[i].debut + m.decalage, `morceau ${j + 1} du plan ${i + 1}`);
+          lg.append(ec);
+        }
+        bloc.append(tx, lg); det.append(bloc);
+      });
+      li.append(det);
+    }
     ol.append(li);
   });
   $("btn-export").disabled = !!enCours || !garde.some((g) => g >= 0);
@@ -346,23 +442,23 @@ $("micro-choix").onchange = async (ev) => {
 
 // ---------- Enregistrement d'un plan ----------
 function attendre(ms) { return new Promise((ok) => setTimeout(ok, ms)); }
-async function enregistrer(i) {
+async function enregistrer(i, j = null) {
   if (!flux || enCours) return;
   if (ctx.state === "suspended") await ctx.resume();
-  const p = D.plans[i];
-  enCours = { i, actif: false, tampons: [], annule: false };
+  const p = D.plans[i], m = j == null ? null : morceaux[i][j];
+  enCours = { i, j, actif: false, tampons: [], annule: false };
   rendre();
-  video.pause(); video.currentTime = p.debut;
+  video.pause(); video.currentTime = p.debut + (m ? m.decalage : 0);
   const dc = $("decompte"); dc.hidden = false;
   for (let k = DECOMPTE_S; k > 0; k--) { dc.textContent = k; await attendre(1000); if (enCours.annule) break; }
   dc.hidden = true;
   if (enCours.annule) { enCours = null; $("etat").textContent = "Enregistrement annulé."; rendre(); return; }
   $("antenne").hidden = false;
-  $("etat").textContent = `Plan ${i + 1} : ${p.nom}. Lis à ton rythme, ça s'arrête seul.`;
+  $("etat").textContent = m ? `Plan ${i + 1}, morceau ${j + 1} : « ${m.texte} » Ça s'arrête seul.` : `Plan ${i + 1} : ${p.nom}. Lis à ton rythme, ça s'arrête seul.`;
   enCours.actif = true;
   video.play().catch(() => { $("etat").textContent = "La vidéo ne se lit pas dans ce navigateur : l'enregistrement continue, suis le texte du plan."; });
   // L'horloge fait foi (la vidéo peut démarrer avec un léger retard) : arrêt à durée du plan + queue.
-  const t0 = performance.now(), duree = (p.duree + QUEUE_S) * 1000;
+  const t0 = performance.now(), duree = ((m ? m.duree : p.duree) + QUEUE_S) * 1000;
   await new Promise((ok) => {
     const tic = () => {
       if (!enCours || enCours.annule || performance.now() - t0 >= duree) return ok();
@@ -378,6 +474,16 @@ async function enregistrer(i) {
   const total = tampons.reduce((s, t) => s + t.length, 0);
   const pcm = new Float32Array(total); let o = 0;
   for (const t of tampons) { pcm.set(t, o); o += t.length; }
+  if (m) {
+    mEssais[i][j].push({ pcm, rate: ctx.sampleRate, t: Date.now() });
+    mGarde[i][j] = mEssais[i][j].length - 1;
+    await sauverM(i, j);
+    const complet = await assembler(i);
+    const reste = mGarde[i].filter((g) => g < 0).length;
+    $("etat").textContent = complet ? `Morceau ${j + 1} enregistré : le plan ${i + 1} est recollé (« Morceaux assemblés »). Écoute-le avec l'image.` : `Morceau ${j + 1} enregistré. Il reste ${reste} morceau${reste > 1 ? "x" : ""} pour recoller le plan ${i + 1}.`;
+    rendre();
+    return;
+  }
   essais[i].push({ pcm, rate: ctx.sampleRate, t: Date.now(), micro: microInfo.nom });
   const hf = await aigus(pcm, ctx.sampleRate).catch(() => null);
   if (hf !== null && hf >= -50) alerteMicro("");
@@ -404,6 +510,17 @@ async function ecouter(i) {
   s.onended = () => { if (ecoute === s) { ecoute = null; video.pause(); rendre(); } };
   $("etat").textContent = `Écoute du plan ${i + 1}, essai ${k + 1}.`;
   rendre();
+}
+async function ecouterPcm(e, debut, libelle) {
+  arreterEcoute(); if (!e) return;
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state === "suspended") await ctx.resume();
+  const buf = ctx.createBuffer(1, e.pcm.length, e.rate); buf.copyToChannel(e.pcm, 0);
+  const s = ctx.createBufferSource(); s.buffer = buf; s.connect(ctx.destination);
+  video.currentTime = debut; await video.play().catch(() => {});
+  s.start(); ecoute = s;
+  s.onended = () => { if (ecoute === s) { ecoute = null; video.pause(); rendre(); } };
+  $("etat").textContent = `Écoute du ${libelle}.`; rendre();
 }
 function arreterEcoute() { if (ecoute) { try { ecoute.stop(); } catch (e) {} ecoute = null; video.pause(); } }
 
@@ -458,7 +575,7 @@ $("btn-export").onclick = () => {
     for (let k = 0; k < n; k++) piste[debut + k] += e.pcm[k];
     const nomFichier = `plans/plan-${String(i + 1).padStart(2, "0")}.wav`;
     fichiers.push({ nom: nomFichier, data: wav(e.pcm, e.rate) });
-    calage.push({ plan: i + 1, nom: p.nom, enregistre: true, fichier: nomFichier, essai_garde: garde[i] + 1, essais: essais[i].length,
+    calage.push({ plan: i + 1, nom: p.nom, enregistre: true, fichier: nomFichier, essai_garde: garde[i] + 1, essais: essais[i].length, par_morceaux: !!e.assemble, morceaux: e.assemble ? morceaux[i].length : 0,
       debut_dans_voix_s: +(p.debut - origine).toFixed(3), debut_dans_preversion_s: p.debut, duree_plan_s: p.duree, duree_prise_s: +(e.pcm.length / e.rate).toFixed(3) });
   });
   fichiers.unshift({ nom: "voix.wav", data: wav(piste, rate) });
